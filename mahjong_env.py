@@ -14,7 +14,7 @@ TILE_NAMES = [
 
 WAN = range(0, 9); TONG = range(9, 18); TIAO = range(18, 27)
 WINDS = range(27, 31); DRAGONS = range(31, 34); HONORS = range(27, 34)
-FLOWERS = range(34, 42); FLOWERS_SEASONS = {34, 35, 36, 37}; FLOWERS_PLANTS = {38, 39, 40, 41}
+# FLOWERS = range(34, 42); FLOWERS_SEASONS = {34, 35, 36, 37}; FLOWERS_PLANTS = {38, 39, 40, 41}  # 暫時停用花牌
 
 def counts34(tiles):
     c = [0] * 34
@@ -43,9 +43,9 @@ def is_qing_yi_se(all_tiles):
         elif t < 34: return False  # 有字牌就不是清一色
     return suits.count(True) == 1
 
-def is_ping_hu(all_tiles, exposed, flowers):
-    """平胡: 無字牌、無花牌、無刻子(全順子+將)"""
-    if flowers: return False  # 有花不是平胡
+def is_ping_hu(all_tiles, exposed, flowers=None):
+    """平胡: 無字牌、無刻子(全順子+將)"""
+    # if flowers: return False  # 有花不是平胡 (暫時停用花牌)
     for t in all_tiles:
         if t >= 27: return False  # 有字牌不是平胡
     # 檢查副露是否有碰/槓
@@ -213,13 +213,13 @@ class MJLogic:
             if c_all[d_idx] >= 3:
                 tai += 1; details.append(f"{TILE_NAMES[d_idx]}刻 (1台)")
 
-        # 5. 花牌台 (個別列出)
-        if flowers:
-            for f_idx in flowers:
-                tai += 1; details.append(f"{TILE_NAMES[f_idx]} (1台)")
-            f_set = set(flowers)
-            if FLOWERS_SEASONS.issubset(f_set): tai += 2; details.append("春夏秋冬 (2台)")
-            if FLOWERS_PLANTS.issubset(f_set): tai += 2; details.append("梅蘭竹菊 (2台)")
+        # 5. 花牌台 (暫時停用)
+        # if flowers:
+        #     for f_idx in flowers:
+        #         tai += 1; details.append(f"{TILE_NAMES[f_idx]} (1台)")
+        #     f_set = set(flowers)
+        #     if FLOWERS_SEASONS.issubset(f_set): tai += 2; details.append("春夏秋冬 (2台)")
+        #     if FLOWERS_PLANTS.issubset(f_set): tai += 2; details.append("梅蘭竹菊 (2台)")
 
         # 6. 槓台
         if m_kong > 0: tai += m_kong; details.append(f"明槓 ({m_kong}台)")
@@ -275,7 +275,7 @@ class MahjongFinalPro:
         self.root.geometry("1160x920")
         self.root.configure(bg="#1a472a")
 
-        self.deck = [i//4 for i in range(136)] + list(range(34, 42))
+        self.deck = [i//4 for i in range(136)]  # + list(range(34, 42))  # 暫時停用花牌
         random.shuffle(self.deck)
 
         self.hands = [[] for _ in range(4)]; self.exposed = [[] for _ in range(4)]
@@ -301,9 +301,10 @@ class MahjongFinalPro:
             messagebox.showinfo("流局", "牌堆已空。"); self.root.destroy(); return
         self.last_draw_was_last_tile = (len(self.deck) == 1)
         tile = self.deck.pop()
-        if tile >= 34:
-            self.flowers[p_idx].append(tile); self._draw(p_idx, False, is_kong_draw)
-            return
+        # 暫時停用花牌處理
+        # if tile >= 34:
+        #     self.flowers[p_idx].append(tile); self._draw(p_idx, False, is_kong_draw)
+        #     return
         self.hands[p_idx].append(tile); self.hands[p_idx].sort()
         self.kong_flower_event[p_idx] = is_kong_draw
 
@@ -340,9 +341,10 @@ class MahjongFinalPro:
             for combo in self.exposed[i]:
                 f = tk.Frame(i_sub, bg="#444"); f.pack(side=tk.LEFT, padx=2)
                 for x in combo: tk.Label(f, text=TILE_NAMES[x], width=3, bg="#eee").pack(side=tk.LEFT)
-            if self.flowers[i]:
-                f_txt = " ".join([TILE_NAMES[x] for x in self.flowers[i]])
-                tk.Label(i_sub, text=f"花: {f_txt}", bg="#2d5a27", fg="#ff7f50", font=("Arial", 10, "bold")).pack(side=tk.LEFT, padx=5)
+            # 暫時停用花牌顯示
+            # if self.flowers[i]:
+            #     f_txt = " ".join([TILE_NAMES[x] for x in self.flowers[i]])
+            #     tk.Label(i_sub, text=f"花: {f_txt}", bg="#2d5a27", fg="#ff7f50", font=("Arial", 10, "bold")).pack(side=tk.LEFT, padx=5)
         cp = self.current_player
         self.info_label.config(text=f"輪到玩家 {cp} | 手牌 {len([t for t in self.hands[cp] if t < 34])} 張")
         self.hu_btn.config(state="normal" if MJLogic.is_hu(self.hands[cp], self.exposed[cp]) else "disabled")
