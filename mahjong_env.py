@@ -380,14 +380,33 @@ class MahjongFinalPro:
                     self.exposed[i].append([tile]*3); self.current_player = i; self.refresh(); return True
         next_p = (s_idx + 1) % 4
         if tile < 27:
-            h = sorted(list(set(self.hands[next_p])))
+            h = self.hands[next_p]  # 用原始手牌列表，不是 set
+            tile_suit = tile // 9  # 牌的花色 (0=萬, 1=筒, 2=條)
+            tile_num = tile % 9    # 牌的數字 (0-8 對應 1-9)
             combos = []
-            if tile-2 in h and tile-1 in h and (tile-2)//9 == tile//9: combos.append([tile-2, tile-1, tile])
-            if tile-1 in h and tile+1 in h and (tile-1)//9 == tile//9: combos.append([tile-1, tile, tile+1])
-            if tile+1 in h and tile+2 in h and (tile+1)//9 == tile//9: combos.append([tile, tile+1, tile+2])
+            
+            # 檢查 tile 作為順子最後一張 (tile-2, tile-1, tile) - 需要 tile 是 3 或更大
+            if tile_num >= 2 and (tile-2) in h and (tile-1) in h:
+                combos.append([tile-2, tile-1, tile])
+            
+            # 檢查 tile 作為順子中間一張 (tile-1, tile, tile+1) - 需要 tile 是 2~8
+            if tile_num >= 1 and tile_num <= 7 and (tile-1) in h and (tile+1) in h:
+                combos.append([tile-1, tile, tile+1])
+            
+            # 檢查 tile 作為順子第一張 (tile, tile+1, tile+2) - 需要 tile 是 7 或更小
+            if tile_num <= 6 and (tile+1) in h and (tile+2) in h:
+                combos.append([tile, tile+1, tile+2])
+            
             if combos:
-                if messagebox.askyesno("吃牌", f"玩家 {next_p} 可以吃 {TILE_NAMES[tile]}，要吃嗎？"):
-                    choice = combos[0]
+                # 直接顯示吃牌選項，讓玩家選擇（取消則不吃）
+                options_str = "\n".join([f"{i+1}. {TILE_NAMES[c[0]]} {TILE_NAMES[c[1]]} {TILE_NAMES[c[2]]}" for i, c in enumerate(combos)])
+                result = simpledialog.askinteger(
+                    "吃牌", 
+                    f"玩家 {next_p} 可以吃 {TILE_NAMES[tile]}\n\n請選擇要吃的組合 (1-{len(combos)})，取消則不吃:\n\n{options_str}",
+                    minvalue=1, maxvalue=len(combos)
+                )
+                if result is not None:
+                    choice = combos[result - 1]
                     for t in choice: 
                         if t != tile: self.hands[next_p].remove(t)
                     self.exposed[next_p].append(sorted(choice)); self.current_player = next_p; self.refresh(); return True
