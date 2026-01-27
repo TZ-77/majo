@@ -35,11 +35,18 @@ def is_hun_yi_se(all_tiles):
 def is_qing_yi_se(all_tiles):
     """清一色: 只有一種數牌，無字牌"""
     suits = [False, False, False]
+    has_honor = False
     for t in all_tiles:
         if t < 9: suits[0] = True
         elif t < 18: suits[1] = True
         elif t < 27: suits[2] = True
-        elif t < 34: return False  # 有字牌就不是清一色
+        elif t < 34: has_honor = True
+    
+    # 如果有字牌就不是清一色
+    if has_honor:
+        return False
+    
+    # 只能有一種數牌
     return suits.count(True) == 1
 
 def is_zi_yi_se(all_tiles):
@@ -48,19 +55,6 @@ def is_zi_yi_se(all_tiles):
         if t < 27:  # 不是字牌
             return False
     return True
-
-def count_an_ke(pure_hand, exposed):
-    """計算暗刻數量"""
-    # 先取得所有手牌（包含胡的牌）
-    hand_counts = counts34(pure_hand)
-    
-    # 計算手牌中的刻子（3張或4張相同的牌）
-    an_ke_count = 0
-    for i in range(34):
-        if hand_counts[i] >= 3:
-            an_ke_count += 1
-    
-    return an_ke_count
 
 def is_ping_hu(all_tiles, exposed, flowers=None, is_zi_mo=False, waiting_count=None, winning_tile=None, pure_hand=None, need_melds=None):
     """平胡: 嚴格判斷台灣麻將平胡規則"""
@@ -90,11 +84,7 @@ def is_ping_hu(all_tiles, exposed, flowers=None, is_zi_mo=False, waiting_count=N
         if len(combo) >= 3 and combo[0] == combo[1]:  # 刻子或槓子
             return False
     
-    # 7. 檢查是否為單吊
-    if is_dan_diao(pure_hand, winning_tile, exposed):
-        return False
-    
-    # 8. 檢查手牌是否全部是順子（包含將牌）
+    # 7. 檢查手牌是否全部是順子（包含將牌）
     if pure_hand is not None and need_melds is not None:
         # pure_hand 已經是17張牌，直接用於分解
         hand_for_decomposition = list(pure_hand)
@@ -111,41 +101,122 @@ def is_ping_hu(all_tiles, exposed, flowers=None, is_zi_mo=False, waiting_count=N
     
     return True
 
-def is_quan_qiu_ren(hand_tiles, exposed):
-    """全求人: 手牌只剩一張(胡的那張)，全靠吃碰槓"""
+def is_quan_qiu_ren(hand_tiles, exposed, is_zi_mo):
+    """全求人: 手牌只剩將牌(2張)，全靠吃碰槓，且必須是榮胡（別人放炮）
+    hand_tiles: 胡牌後的手牌（包含將牌，共2張）
+    """
     pure_hand = [t for t in hand_tiles if t < 34]
-    return len(pure_hand) == 1 and len(exposed) == 5
+    # 全求人：5組副露 + 只剩將牌（2張） + 榮胡
+    return len(pure_hand) == 2 and len(exposed) == 5 and not is_zi_mo
 
-def count_waiting_tiles(hand, exposed):
-    """計算聽幾張牌 (用於獨聽判定)"""
+def is_ban_qiu_ren(hand_tiles, exposed, is_zi_mo):
+    """半求人: 手牌只剩將牌(2張)，全靠吃碰槓，且必須是自摸
+    hand_tiles: 胡牌後的手牌（包含將牌，共2張）
+    """
+    pure_hand = [t for t in hand_tiles if t < 34]
+    # 半求人：5組副露 + 只剩將牌（2張） + 自摸
+    return len(pure_hand) == 2 and len(exposed) == 5 and is_zi_mo
+
+def count_waiting_tiles(hand, exposed, winning_tile=None):
+    """計算聽幾張牌 (用於獨聽判定)
+    hand: 胡牌前的手牌（不包含胡的牌）
+    """
     waiting = []
     for test_tile in range(34):
-        # 檢查加入這張牌是否能胡
-        if MJLogic.is_hu(hand, exposed, test_tile):
+        # 把測試牌加入手牌，檢查是否能胡
+        test_hand = list(hand) + [test_tile]
+        if MJLogic.is_hu(test_hand, exposed):
             waiting.append(test_tile)
     return waiting
 
-def is_dan_diao(hand, winning_tile, exposed):
-    """單吊: 胡牌那張剛好是將牌"""
-    if winning_tile is None:
+def is_du_ting(hand, exposed, winning_tile=None):
+    """獨聽: 只聽一張牌"""
+    waiting = count_waiting_tiles(hand, exposed, winning_tile)
+    return len(waiting) == 1
+
+def is_peng_peng_hu(pure_hand, exposed, need_melds):
+    """碰碰胡: 所有面子都是刻子（包含手牌和副露）"""
+    # 檢查副露部分是否全是刻子
+    for combo in exposed:
+        if len(combo) >= 3:
+            # 刻子：三張相同的牌
+            if combo[0] == combo[1] == combo[2]:
+                continue  # 是刻子
+            elif len(combo) == 4 and combo[0] == combo[1] == combo[2] == combo[3]:
+                continue  # 槓子也屬於刻子類
+            else:
+                # 如果有順子，就不是碰碰胡
+                return False
+    
+    # 檢查手牌部分是否可以分解為全刻子
+    c = counts34(pure_hand)
+    
+    def can_all_pong(cc, melds_left, pair_found):
+        """檢查是否可以分解為全刻子 + 一對將"""
+        # 找到第一個有牌的位置
+        first = next((i for i, v in enumerate(cc) if v > 0), -1)
+        
+        if first == -1:
+            # 所有牌都用完了
+            return melds_left == 0 and pair_found
+        
+        # 如果還沒有將牌，且有2張以上，嘗試選為將牌
+        if not pair_found and cc[first] >= 2:
+            cc[first] -= 2
+            if can_all_pong(cc, melds_left, True):
+                cc[first] += 2
+                return True
+            cc[first] += 2
+        
+        # 嘗試形成刻子
+        if cc[first] >= 3 and melds_left > 0:
+            cc[first] -= 3
+            if can_all_pong(cc, melds_left - 1, pair_found):
+                cc[first] += 3
+                return True
+            cc[first] += 3
+        
         return False
     
-    # 單吊的定義：只聽一張牌，且那張牌是將牌
-    # 先檢查是否只聽一張
-    waiting = count_waiting_tiles(hand, exposed)
-    if len(waiting) != 1:
-        return False
+    return can_all_pong(list(c), need_melds, False)
+
+def count_an_ke(pure_hand, exposed, winning_tile=None, is_zi_mo=False):
+    """計算暗刻數量（修正版）"""
+    # 取得手牌計數（17張）
+    hand_counts = counts34(pure_hand)
     
-    # 檢查是否只聽將牌
-    if waiting[0] != winning_tile:
-        return False
+    an_ke_count = 0
     
-    # 單吊的特徵：將牌在手中只有一張（加上胡的那張變成兩張）
-    pure_hand = [t for t in hand if t < 34]
-    if pure_hand.count(winning_tile) == 1:
-        return True
+    # 如果是榮胡，需要考慮胡牌前的手牌狀態
+    hand_before = None
+    if not is_zi_mo and winning_tile is not None:
+        hand_before = list(pure_hand)
+        if winning_tile in hand_before:
+            hand_before.remove(winning_tile)
     
-    return False
+    for i in range(34):
+        if is_zi_mo:
+            # 自摸：直接看手牌是否有3張或4張
+            if hand_counts[i] >= 3:
+                an_ke_count += 1
+        else:
+            # 榮胡：看胡牌前的手牌狀態
+            if hand_before is not None:
+                hand_counts_before = counts34(hand_before)
+                if hand_counts_before[i] >= 3:
+                    # 檢查是否為將牌
+                    if i == winning_tile:
+                        # 如果胡的牌是刻子中的一張，要特別處理
+                        if hand_counts_before[i] == 3:
+                            # 胡之前有3張，這是刻子
+                            an_ke_count += 1
+                        elif hand_counts_before[i] == 2:
+                            # 胡之前有2張，這是將牌，不是刻子
+                            pass
+                    else:
+                        an_ke_count += 1
+    
+    return an_ke_count
 
 def is_da_si_xi(all_tiles, exposed):
     """大四喜: 東南西北四組刻子"""
@@ -303,23 +374,18 @@ class MJLogic:
             for t in combo: 
                 if t < 34: all_tiles.append(t)
         
-        # pure_hand 已經包含 winning_tile (共17張)，不需要再加
-        # all_tiles = pure_hand + exposed = 全部牌
-        
         c_all = counts34(all_tiles)
 
-        # 1. 莊家/連莊 - 修正：使用 2n+1 公式，不單獨計算莊家台
+        # 1. 莊家/連莊
         if is_dealer:
             if streak > 0:
-                # 連N拉N：計算公式為 2n+1 台 (n=連莊次數)
-                # 其中 +1 就是莊家台，所以不用另外加莊家台
                 tai += (2 * streak + 1)
                 details.append(f"連{streak}拉{streak} (包含莊家台共 {2 * streak + 1}台)")
             else:
                 tai += 1
                 details.append("莊家 (1台)")
 
-        # 2. 天胡/地胡 (24台) - 第一輪自摸胡，修改為24台
+        # 2. 天胡/地胡
         if is_first_round and is_zi_mo and len(exposed) == 0:
             if is_dealer:
                 tai += 24; details.append("天胡 (24台)")
@@ -332,7 +398,7 @@ class MJLogic:
         if is_haidilao: tai += 1; details.append("海底撈月 (1台)")
         if is_kong_flower: tai += 1; details.append("槓上開花 (1台)")
         
-        # 4. 天聽/地聽 (第一輪手牌就聽牌)
+        # 4. 天聽/地聽
         if is_tenhou:
             tai += 8; details.append("天聽 (8台)")
         elif is_chihou:
@@ -347,12 +413,12 @@ class MJLogic:
         # 檢查是否為字一色
         has_zi_yi_se = is_zi_yi_se(all_tiles)
         
-        # 5. 風刻台 - 只有對應風位才有台數，但如果是四喜系列則不算
+        # 5. 風刻台
         if not (has_da_si_xi or has_xiao_si_xi):
             WIND_NAMES = ['東', '南', '西', '北']
             for w_idx in WINDS:
                 if c_all[w_idx] >= 3:
-                    wind_pos = w_idx - 27  # 0=東, 1=南, 2=西, 3=北
+                    wind_pos = w_idx - 27
                     is_round = (wind_pos == round_wind)
                     is_seat = (wind_pos == seat_wind)
                     
@@ -364,7 +430,7 @@ class MJLogic:
                         elif is_seat:
                             tai += 1; details.append(f"{WIND_NAMES[wind_pos]}風刻 (門風 1台)")
         
-        # 6. 三元牌刻 - 如果是三元系列則不單獨計算
+        # 6. 三元牌刻
         if not (has_da_san_yuan or has_xiao_san_yuan):
             for d_idx in DRAGONS:
                 if c_all[d_idx] >= 3:
@@ -374,97 +440,96 @@ class MJLogic:
         if m_kong > 0: tai += m_kong; details.append(f"明槓 ({m_kong}台)")
         if a_kong > 0: tai += (a_kong * 2); details.append(f"暗槓 ({a_kong*2}台)")
 
-        # 8. 暗刻計算
-        an_ke_count = count_an_ke(pure_hand, exposed)
+                # 8. 暗刻計算
+        an_ke_count = count_an_ke(pure_hand, exposed, winning_tile, is_zi_mo)
         
-        # 9. 大牌型 - 檢查順序很重要
+        # 9. 大牌型
         need_m = 5 - len(exposed)
         
-        # pure_hand 已經是17張牌，直接用於分解
-        hand_for_decomposition = list(pure_hand)
+        # ========== 暗刻系列檢查 ==========
+        # 注意：暗刻系列可以與碰碰胡同時存在
         
-        deco = MJLogic.find_one_decomposition_17(hand_for_decomposition, need_m)
-        
-        # 大四喜 (16台) - 最高優先級
+        if len(exposed) == 0:  # 必須門清
+            # 1. 五暗刻 (8台) - 必須有5個暗刻
+            if an_ke_count == 5:
+                tai += 8
+                details.append("五暗刻 (8台)")
+            
+            # 2. 四暗刻 (5台) - 有4個暗刻
+            elif an_ke_count == 4:
+                tai += 5
+                
+                # 檢查是否為四暗刻單騎
+                if not is_zi_mo and winning_tile is not None:
+                    hand_counts = counts34(pure_hand)
+                    if hand_counts[winning_tile] == 1:
+                        details.append("四暗刻單騎 (5台)")
+                    else:
+                        details.append("四暗刻 (5台)")
+                else:
+                    details.append("四暗刻 (5台)")
+            
+            # 3. 三暗刻 (2台) - 有3個暗刻
+            elif an_ke_count == 3:
+                tai += 2
+                details.append("三暗刻 (2台)")
+
+        # 大四喜 (16台)
         if has_da_si_xi:
             tai += 16; details.append("大四喜 (16台)")
-        # 小四喜 (8台) - 次高優先級，且不是大四喜
+        # 小四喜 (8台)
         elif has_xiao_si_xi:
             tai += 8; details.append("小四喜 (8台)")
         
         # 大三元 (8台)
         if has_da_san_yuan:
             tai += 8; details.append("大三元 (8台)")
-        # 小三元 (4台) - 且不是大三元
+        # 小三元 (4台)
         elif has_xiao_san_yuan:
             tai += 4; details.append("小三元 (4台)")
         
-        # 字一色 (16台) - 如果成立，必須是字一色
+        # 字一色 (16台)
         if has_zi_yi_se:
             tai += 16; details.append("字一色 (16台)")
         
-        # ========== 暗刻 vs 碰碰胡 判斷邏輯 ==========
-        # 規則：
-        # 1. 暗刻必須門清，刻子完全靠自己摸到
-        # 2. 榮胡時，胡的那組刻子不算暗刻
-        # 3. 暗刻跟碰碰胡互斥（二選一）
-        # 4. 門清 + 暗刻>=3 → 算暗刻系列
-        # 5. 門清 + 暗刻<3 + 全刻子 → 算碰碰胡
-        # 6. 有副露 + 全刻子 → 算碰碰胡
+        # ========== 碰碰胡檢查 ==========
+        # 注意：碰碰胡可以與暗刻系列同時存在
+        # 移除之前的互斥檢查
+        is_peng_peng = is_peng_peng_hu(pure_hand, exposed, need_m)
+        if is_peng_peng:
+            tai += 4
+            details.append("碰碰胡 (4台)")
         
-        # 判斷是否全是刻子
-        is_all_pong = False
-        if deco:
-            hand_all_pong = all(m[0] == "pong" for m in deco[1])
-            exposed_all_pong = not any(len(x)==3 and x[0]!=x[1] for x in exposed)
-            is_all_pong = hand_all_pong and exposed_all_pong
-        
-        if len(exposed) == 0:
-            # 門清情況
-            if an_ke_count >= 3:
-                # 有暗刻 → 算暗刻系列（不算碰碰胡）
-                if an_ke_count == 5:
-                    tai += 8; details.append("五暗刻 (8台)")
-                elif an_ke_count == 4:
-                    tai += 5; details.append("四暗刻 (5台)")
-                elif an_ke_count == 3:
-                    tai += 2; details.append("三暗刻 (2台)")
-            elif is_all_pong:
-                # 門清 + 暗刻<3 + 全刻子 → 碰碰胡
-                tai += 4; details.append("碰碰胡 (4台)")
-        else:
-            # 有副露（碰過牌）
-            if is_all_pong:
-                # 全刻子 → 碰碰胡
-                tai += 4; details.append("碰碰胡 (4台)")
-        
-        # 清一色 (8台) - 字一色不是清一色
+        # 清一色 (8台)
         if not has_zi_yi_se and is_qing_yi_se(all_tiles):
             tai += 8; details.append("清一色 (8台)")
-        # 混一色 (4台) - 清一色和混一色互斥，且字一色不是混一色
+        # 混一色 (4台)
         elif not has_zi_yi_se and is_hun_yi_se(all_tiles):
             tai += 4; details.append("混一色 (4台)")
         
-        # 平胡 (2台) - 字一色不可能是平胡
+        # 平胡 (2台)
         if not has_zi_yi_se and is_ping_hu(all_tiles, exposed, flowers, is_zi_mo, waiting_count, winning_tile, pure_hand, need_m):
             tai += 2; details.append("平胡 (2台)")
         
         # 全求人 (2台)
-        if is_quan_qiu_ren(pure_hand, exposed):
+        if is_quan_qiu_ren(pure_hand, exposed, is_zi_mo):
             tai += 2; details.append("全求人 (2台)")
         
-        # 獨聽 (1台) - 只聽一張
+        # 半求人 (1台)
+        if is_ban_qiu_ren(pure_hand, exposed, is_zi_mo):
+            tai += 1; details.append("半求人 (1台)")
+        
+        # 獨聽 (1台)
         if waiting_count is not None:
             if waiting_count == 1:
                 tai += 1; details.append("獨聽 (1台)")
-        
-        # 單吊 (1台) - 需要用胡牌前的手牌 (16張) 來判斷
-        if winning_tile is not None:
+        elif winning_tile is not None:
             pure_hand_before_win = list(pure_hand)
             if winning_tile in pure_hand_before_win:
-                pure_hand_before_win.remove(winning_tile)  # 移除一張 winning_tile
-            if is_dan_diao(pure_hand_before_win, winning_tile, exposed):
-                tai += 1; details.append("單吊 (1台)")
+                pure_hand_before_win.remove(winning_tile)
+            
+            if is_du_ting(pure_hand_before_win, exposed, winning_tile):
+                tai += 1; details.append("獨聽 (1台)")
         
         return max(1, tai), details
 
@@ -498,14 +563,18 @@ class MahjongFinalPro:
                           f"風位分配:\n{wind_info}\n\n"
                           f"注意：只有對應到自己風位的風刻才有台數！")
 
-        self.deck = [i//4 for i in range(136)]
+        self.deck = [i//4 for i in range(136)]  # 136張牌
         random.shuffle(self.deck)
 
         self.hands = [[] for _ in range(4)]; self.exposed = [[] for _ in range(4)]
         self.flowers = [[] for _ in range(4)]; self.river = [[] for _ in range(4)]
         self.current_player = 0; self.dealer_index = 0; self.dealer_streak = 0
         self.kong_count = [0]*4; self.ankong_count = [0]*4
-        self.kong_flower_event = [False]*4; self.last_draw_was_last_tile = False
+        self.kong_flower_event = [False]*4; 
+        
+        # 海底撈月計數器
+        self.last_tile_count = 16  # 當牌堆剩16張時，下一張就是海底撈月
+        self.is_last_tile = False  # 是否為最後一張牌
         
         # 風位追蹤系統
         self.round_wind = 0  # 圈風: 0=東, 1=南, 2=西, 3=北
@@ -545,7 +614,13 @@ class MahjongFinalPro:
     def _draw(self, p_idx, count_draw=True, is_kong_draw=False):
         if not self.deck:
             messagebox.showinfo("流局", "牌堆已空。"); self.root.destroy(); return
-        self.last_draw_was_last_tile = (len(self.deck) == 1)
+        
+        # 檢查是否為海底撈月（牌堆剩16張，抽第17張）
+        if len(self.deck) <= self.last_tile_count:
+            self.is_last_tile = True
+        else:
+            self.is_last_tile = False
+            
         tile = self.deck.pop()
         self.hands[p_idx].append(tile); self.hands[p_idx].sort()
         self.kong_flower_event[p_idx] = is_kong_draw
@@ -565,15 +640,29 @@ class MahjongFinalPro:
 
     def setup_ui(self):
         self.top_frame = tk.Frame(self.root, bg="#2d5a27"); self.top_frame.pack(fill="x")
-        self.hu_btn = tk.Button(self.top_frame, text="胡牌", bg="#8b0000", fg="white", font=("微軟正黑體", 12, "bold"), command=lambda: self.on_hu_click(True))
+        
+        # 左側按鈕區域
+        btn_frame = tk.Frame(self.top_frame, bg="#2d5a27"); btn_frame.pack(side=tk.LEFT)
+        self.hu_btn = tk.Button(btn_frame, text="胡牌", bg="#8b0000", fg="white", font=("微軟正黑體", 12, "bold"), command=lambda: self.on_hu_click(True))
         self.hu_btn.pack(side=tk.LEFT, padx=12, pady=10)
-        self.kong_btn = tk.Button(self.top_frame, text="槓", bg="#4b0082", fg="white", font=("微軟正黑體", 12, "bold"), command=self.on_kong_click)
+        self.kong_btn = tk.Button(btn_frame, text="槓", bg="#4b0082", fg="white", font=("微軟正黑體", 12, "bold"), command=self.on_kong_click)
         self.kong_btn.pack(side=tk.LEFT, padx=8, pady=10)
-        self.info_label = tk.Label(self.top_frame, text="", fg="#ffcc00", bg="#2d5a27", font=("微軟正黑體", 12))
-        self.info_label.pack(side=tk.RIGHT, padx=20)
+        
+        # 右側資訊區域
+        info_frame = tk.Frame(self.top_frame, bg="#2d5a27"); info_frame.pack(side=tk.RIGHT)
+        
+        # 剩餘牌數顯示
+        self.deck_label = tk.Label(info_frame, text="", fg="#ff9900", bg="#2d5a27", font=("微軟正黑體", 12, "bold"))
+        self.deck_label.pack(side=tk.RIGHT, padx=20)
+        
         # 風位顯示
-        self.wind_label = tk.Label(self.top_frame, text="", fg="#00ff00", bg="#2d5a27", font=("微軟正黑體", 12))
+        self.wind_label = tk.Label(info_frame, text="", fg="#00ff00", bg="#2d5a27", font=("微軟正黑體", 12))
         self.wind_label.pack(side=tk.RIGHT, padx=10)
+        
+        # 當前玩家資訊
+        self.info_label = tk.Label(info_frame, text="", fg="#ffcc00", bg="#2d5a27", font=("微軟正黑體", 12))
+        self.info_label.pack(side=tk.RIGHT, padx=10)
+        
         self.canvas = tk.Canvas(self.root, bg="#1a472a", height=180); self.canvas.pack(fill="x")
         WIND_NAMES = ['東', '南', '西', '北']
         self.p_frames = [tk.LabelFrame(self.root, text=f"玩家 {i} ({WIND_NAMES[self.seat_winds[i]]}風)", bg="#2d5a27", fg="white") for i in range(4)]
@@ -582,6 +671,16 @@ class MahjongFinalPro:
     def refresh(self):
         WIND_NAMES = ['東', '南', '西', '北']
         self.wind_label.config(text=f"【{WIND_NAMES[self.round_wind]}風圈】第{self.round_number}局")
+        
+        # 更新剩餘牌數顯示
+        remaining = len(self.deck)
+        deck_text = f"剩餘牌數: {remaining}張"
+        if self.is_last_tile:
+            deck_text += " 【海底牌】"
+        elif remaining <= self.last_tile_count:
+            deck_text += " 【接近海底】"
+        self.deck_label.config(text=deck_text)
+        
         self.canvas.delete("all")
         for p, tiles in enumerate(self.river):
             txt = f"P{p} 棄牌: " + " ".join([TILE_NAMES[t] for t in tiles[-10:]])
@@ -626,7 +725,8 @@ class MahjongFinalPro:
             # 檢查是否能胡這張牌（傳入胡的牌）
             if MJLogic.is_hu(self.hands[i], self.exposed[i], tile):
                 if messagebox.askyesno("榮胡", f"玩家 {i} 要胡牌嗎？"):
-                    self.hands[i].append(tile); self.current_player = i; self.on_hu_click(False, s_idx, tile); return True
+                    self.hands[i].append(tile); self.current_player = i; 
+                    self.on_hu_click(False, s_idx, tile); return True
             if self.hands[i].count(tile) == 3:
                 if messagebox.askyesno("明槓", f"玩家 {i} 要明槓 {TILE_NAMES[tile]} 嗎？"):
                     for _ in range(3): self.hands[i].remove(tile)
@@ -680,6 +780,7 @@ class MahjongFinalPro:
     def on_hu_click(self, is_zi_mo, shooter=None, winning_tile=None):
         cp = self.current_player
         pure_hand = [t for t in self.hands[cp] if t < 34]
+        
         if winning_tile is None:
             if is_zi_mo and pure_hand:
                 winning_tile = pure_hand[-1]
@@ -689,18 +790,23 @@ class MahjongFinalPro:
         # 計算聽牌數（用於平胡和獨聽判斷）
         waiting_count = 0
         if winning_tile is not None:
-            # 只移除一張 winning_tile，而不是所有相同的牌
+            # 獲取胡牌前的手牌（移除一張胡的牌）
             hand_before_win = list(pure_hand)
             if winning_tile in hand_before_win:
-                hand_before_win.remove(winning_tile)  # 只移除第一個
-            waiting = count_waiting_tiles(hand_before_win, self.exposed[cp])
+                hand_before_win.remove(winning_tile)  # 只移除第一張
+            
+            # 計算聽牌數
+            waiting = count_waiting_tiles(hand_before_win, self.exposed[cp], winning_tile)
             waiting_count = len(waiting)
+        
+        # 檢查是否為海底撈月（摸到最後一張牌胡牌）
+        is_haidilao = self.is_last_tile and is_zi_mo
         
         # 計算台數（包含門清、風位和平胡判斷）
         tai, details = MJLogic.calculate_tai_star31_auto(
             pure_hand, self.exposed[cp], self.flowers[cp],
             is_zi_mo, cp==self.dealer_index, self.dealer_streak, 
-            self.last_draw_was_last_tile, self.kong_flower_event[cp], 
+            is_haidilao, self.kong_flower_event[cp], 
             self.kong_count[cp], self.ankong_count[cp],
             self.round_wind, self.seat_winds[cp], 
             winning_tile, waiting_count, self.is_first_round,
@@ -711,6 +817,7 @@ class MahjongFinalPro:
         wind_info = f"【{WIND_NAMES[self.round_wind]}風圈】玩家 {cp} ({WIND_NAMES[self.seat_winds[cp]]}風)"
         msg = f"{wind_info} {'自摸' if is_zi_mo else '榮胡'}！\n\n台數明細：\n" + "\n".join(details) + f"\n\n總計: {tai}台"
         messagebox.showinfo("胡牌結算", msg); self.root.destroy()
+
 
 if __name__ == "__main__":
     root = tk.Tk()
