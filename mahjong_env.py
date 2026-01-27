@@ -677,8 +677,6 @@ class MahjongFinalPro:
         btn_frame = tk.Frame(self.top_frame, bg="#2d5a27"); btn_frame.pack(side=tk.LEFT)
         self.hu_btn = tk.Button(btn_frame, text="胡牌", bg="#8b0000", fg="white", font=("微軟正黑體", 12, "bold"), command=lambda: self.on_hu_click(True))
         self.hu_btn.pack(side=tk.LEFT, padx=12, pady=10)
-        self.kong_btn = tk.Button(btn_frame, text="槓", bg="#4b0082", fg="white", font=("微軟正黑體", 12, "bold"), command=self.on_kong_click)
-        self.kong_btn.pack(side=tk.LEFT, padx=8, pady=10)
         
         # 右側資訊區域
         info_frame = tk.Frame(self.top_frame, bg="#2d5a27"); info_frame.pack(side=tk.RIGHT)
