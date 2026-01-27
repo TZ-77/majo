@@ -582,48 +582,62 @@ class MahjongFinalPro:
         self.winning_tile = None  # 胡的那張牌
         self.is_first_round = True  # 是否為第一輪（用於天胡地胡判定）
         
-        # 天聽/地聽標記
-        self.tenhou_checked = [False] * 4  # 標記是否已檢查過天聽
-        self.chihou_checked = [False] * 4  # 標記是否已檢查過地聽
-        self.is_tenhou = [False] * 4  # 是否為天聽
-        self.is_chihou = [False] * 4  # 是否為地聽
+        # 天聽標記（莊家17張配牌就聽牌）
+        self.is_tenhou = [False] * 4
+        
+        # 地聽系統
+        # 地聽規則：起牌後海底打進八張牌內，四家沒有碰牌吃牌明槓
+        self.total_discards = 0  # 總棄牌數（用於判定8張牌內）
+        self.anyone_exposed = False  # 是否有任何人吃碰槓
 
         for i in range(4):
             for _ in range(16): self._draw(i, False)
         self._draw(0, True)
         
-        # 檢查初始手牌是否為天聽/地聽
-        self._check_tenhou_chihou()
+        # 檢查莊家天聽
+        self._check_tenhou()
 
         self.setup_ui(); self.refresh()
     
-    def _check_tenhou_chihou(self):
-        """檢查初始手牌是否為天聽/地聽
+    def _check_tenhou(self):
+        """檢查莊家是否為天聽
         
         天聽規則：
         - 莊家發完17張牌後，還沒出牌前就已經聽牌
-        - 一旦天聽成立，如果胡牌就算天聽台數
         - 天聽後如果換牌（出牌）則失去天聽資格
-        
-        地聽規則：
-        - 閒家發完16張牌後，還沒摸牌/出牌前就已經聽牌
-        - 同樣規則，出牌後失去地聽資格
+        - 天聽不能過水（不能放棄胡牌機會）
         """
-        for i in range(4):
-            if len(self.exposed[i]) == 0:  # 必須門清
-                if i == self.dealer_index:
-                    # 莊家：檢查17張手牌是否聽牌
-                    # 需要移除一張牌測試（因為發完牌是17張）
-                    waiting_tiles = count_waiting_tiles(self.hands[i][:-1], self.exposed[i])
-                    if len(waiting_tiles) > 0:
-                        self.is_tenhou[i] = True
-                        self.tenhou_checked[i] = True
-                else:
-                    # 閒家：檢查16張手牌是否聽牌
-                    waiting_tiles = count_waiting_tiles(self.hands[i], self.exposed[i])
-                    if len(waiting_tiles) > 0:
-                        self.is_chihou[i] = True
-                        self.chihou_checked[i] = True
+        i = self.dealer_index
+        if len(self.exposed[i]) == 0:  # 必須門清
+            # 莊家：檢查17張手牌是否聽牌（移除一張牌測試）
+            waiting_tiles = count_waiting_tiles(self.hands[i][:-1], self.exposed[i])
+            if len(waiting_tiles) > 0:
+                self.is_tenhou[i] = True
+    
+    def check_chihou(self, p_idx):
+        """檢查玩家是否符合地聽條件（在胡牌時呼叫）
+        
+        地聽條件：
+        1. 起牌後海底打進八張牌內（總棄牌數 <= 8）
+        2. 四家沒有碰牌吃牌明槓
+        3. 玩家目前為門清（沒有吃碰過）
+        
+        地聽不與聽牌重複計台
+        地聽不得過水
+        """
+        # 條件1：總棄牌數 <= 8
+        if self.total_discards > 8:
+            return False
+        
+        # 條件2：四家沒有吃碰槓
+        if self.anyone_exposed:
+            return False
+        
+        # 條件3：玩家必須門清
+        if len(self.exposed[p_idx]) > 0:
+            return False
+        
+        return True
 
     def _draw(self, p_idx, count_draw=True, is_kong_draw=False):
         if not self.deck:
@@ -639,18 +653,8 @@ class MahjongFinalPro:
         self.hands[p_idx].append(tile); self.hands[p_idx].sort()
         self.kong_flower_event[p_idx] = is_kong_draw
         
-        # 檢查天聽/地聽（第一次摸牌後）
-        if count_draw and self.is_first_round and not self.tenhou_checked[p_idx] and not self.chihou_checked[p_idx]:
-            if len(self.exposed[p_idx]) == 0:  # 必須門清
-                hand_before_draw = self.hands[p_idx][:-1]  # 最後一張是剛摸的
-                waiting_tiles = count_waiting_tiles(hand_before_draw, self.exposed[p_idx])
-                if len(waiting_tiles) > 0:
-                    if p_idx == self.dealer_index:
-                        self.is_tenhou[p_idx] = True
-                        self.tenhou_checked[p_idx] = True
-                    else:
-                        self.is_chihou[p_idx] = True
-                        self.chihou_checked[p_idx] = True
+        # 檢查天聽（只有莊家，且必須是第一輪）
+        # 地聽由玩家主動宣告，不在此處檢查
 
     def setup_ui(self):
         self.top_frame = tk.Frame(self.root, bg="#2d5a27"); self.top_frame.pack(fill="x")
@@ -729,9 +733,12 @@ class MahjongFinalPro:
         self.kong_flower_event[p_idx] = False
         self.is_first_round = False  # 有人出牌後就不是第一輪了
         
-        # 出牌後失去天聽/地聽資格（因為換牌了）
+        # 更新總棄牌數（用於地聽判定）
+        self.total_discards += 1
+        
+        # 出牌後失去天聽資格（因為換牌了）
         self.is_tenhou[p_idx] = False
-        self.is_chihou[p_idx] = False
+            
         self.refresh()
         if not self.check_others_reaction(p_idx, tile):
             self.current_player = (p_idx + 1) % 4
@@ -749,11 +756,14 @@ class MahjongFinalPro:
                 if messagebox.askyesno("明槓", f"玩家 {i} 要明槓 {TILE_NAMES[tile]} 嗎？"):
                     for _ in range(3): self.hands[i].remove(tile)
                     self.exposed[i].append([tile]*4); self.kong_count[i] += 1
+                    self.anyone_exposed = True  # 有人明槓，地聽資格失效
                     self.current_player = i; self._draw(i, True, True); self.refresh(); return True
             if self.hands[i].count(tile) >= 2:
                 if messagebox.askyesno("碰", f"玩家 {i} 要碰 {TILE_NAMES[tile]} 嗎？"):
                     for _ in range(2): self.hands[i].remove(tile)
-                    self.exposed[i].append([tile]*3); self.current_player = i; self.refresh(); return True
+                    self.exposed[i].append([tile]*3)
+                    self.anyone_exposed = True  # 有人碰，地聽資格失效
+                    self.current_player = i; self.refresh(); return True
         next_p = (s_idx + 1) % 4
         if tile < 27:
             h = self.hands[next_p]
@@ -780,7 +790,9 @@ class MahjongFinalPro:
                     choice = combos[result - 1]
                     for t in choice: 
                         if t != tile: self.hands[next_p].remove(t)
-                    self.exposed[next_p].append(sorted(choice)); self.current_player = next_p; self.refresh(); return True
+                    self.exposed[next_p].append(sorted(choice))
+                    self.anyone_exposed = True  # 有人吃，地聽資格失效
+                    self.current_player = next_p; self.refresh(); return True
         return False
 
     def on_kong_click(self):
@@ -820,6 +832,9 @@ class MahjongFinalPro:
         # 檢查是否為海底撈月（摸到最後一張牌胡牌）
         is_haidilao = self.is_last_tile and is_zi_mo
         
+        # 檢查是否符合地聽條件（8張牌內、無吃碰槓、門清）
+        is_chihou = self.check_chihou(cp)
+        
         # 計算台數（包含門清、風位和平胡判斷）
         tai, details = MJLogic.calculate_tai_star31_auto(
             pure_hand, self.exposed[cp], self.flowers[cp],
@@ -828,7 +843,7 @@ class MahjongFinalPro:
             self.kong_count[cp], self.ankong_count[cp],
             self.round_wind, self.seat_winds[cp], 
             winning_tile, waiting_count, self.is_first_round,
-            self.is_tenhou[cp], self.is_chihou[cp]
+            self.is_tenhou[cp], is_chihou
         )
         
         WIND_NAMES = ['東', '南', '西', '北']
@@ -840,4 +855,4 @@ class MahjongFinalPro:
 if __name__ == "__main__":
     root = tk.Tk()
     game = MahjongFinalPro(root)
-    root.mainloop()
+    root.mainloop()    
