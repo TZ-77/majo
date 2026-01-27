@@ -598,16 +598,30 @@ class MahjongFinalPro:
         self.setup_ui(); self.refresh()
     
     def _check_tenhou_chihou(self):
-        """檢查初始手牌是否為天聽/地聽"""
+        """檢查初始手牌是否為天聽/地聽
+        
+        天聽規則：
+        - 莊家發完17張牌後，還沒出牌前就已經聽牌
+        - 一旦天聽成立，如果胡牌就算天聽台數
+        - 天聽後如果換牌（出牌）則失去天聽資格
+        
+        地聽規則：
+        - 閒家發完16張牌後，還沒摸牌/出牌前就已經聽牌
+        - 同樣規則，出牌後失去地聽資格
+        """
         for i in range(4):
             if len(self.exposed[i]) == 0:  # 必須門清
-                hand_before_draw = self.hands[i][:-1]  # 最後一張是剛摸的，不算在初始手牌內
-                waiting_tiles = count_waiting_tiles(hand_before_draw, self.exposed[i])
-                if len(waiting_tiles) > 0:
-                    if i == self.dealer_index:
+                if i == self.dealer_index:
+                    # 莊家：檢查17張手牌是否聽牌
+                    # 需要移除一張牌測試（因為發完牌是17張）
+                    waiting_tiles = count_waiting_tiles(self.hands[i][:-1], self.exposed[i])
+                    if len(waiting_tiles) > 0:
                         self.is_tenhou[i] = True
                         self.tenhou_checked[i] = True
-                    else:
+                else:
+                    # 閒家：檢查16張手牌是否聽牌
+                    waiting_tiles = count_waiting_tiles(self.hands[i], self.exposed[i])
+                    if len(waiting_tiles) > 0:
                         self.is_chihou[i] = True
                         self.chihou_checked[i] = True
 
@@ -714,6 +728,10 @@ class MahjongFinalPro:
         tile = self.hands[p_idx].pop(t_idx); self.river[p_idx].append(tile)
         self.kong_flower_event[p_idx] = False
         self.is_first_round = False  # 有人出牌後就不是第一輪了
+        
+        # 出牌後失去天聽/地聽資格（因為換牌了）
+        self.is_tenhou[p_idx] = False
+        self.is_chihou[p_idx] = False
         self.refresh()
         if not self.check_others_reaction(p_idx, tile):
             self.current_player = (p_idx + 1) % 4
