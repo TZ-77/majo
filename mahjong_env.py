@@ -589,6 +589,14 @@ class MahjongFinalPro:
         # 地聽規則：起牌後海底打進八張牌內，四家沒有碰牌吃牌明槓
         self.total_discards = 0  # 總棄牌數（用於判定8張牌內）
         self.anyone_exposed = False  # 是否有任何人吃碰槓
+        
+        # 過水系統
+        # 過水規則：玩家選擇不吃/碰/胡某張牌後，同一圈內不能再對相同的牌進行同樣操作
+        # 直到該玩家自己摸牌後才解禁
+        self.passed_hu = [set() for _ in range(4)]    # 過水胡的牌
+        self.passed_pong = [set() for _ in range(4)]  # 過水碰的牌
+        self.passed_chow = [set() for _ in range(4)]  # 過水吃的牌
+        self.passed_kong = [set() for _ in range(4)]  # 過水槓的牌
 
         for i in range(4):
             for _ in range(16): self._draw(i, False)
@@ -653,8 +661,14 @@ class MahjongFinalPro:
         self.hands[p_idx].append(tile); self.hands[p_idx].sort()
         self.kong_flower_event[p_idx] = is_kong_draw
         
+        # 摸牌後清除過水記錄（解禁）
+        self.passed_hu[p_idx].clear()
+        self.passed_pong[p_idx].clear()
+        self.passed_chow[p_idx].clear()
+        self.passed_kong[p_idx].clear()
+        
         # 檢查天聽（只有莊家，且必須是第一輪）
-        # 地聽由玩家主動宣告，不在此處檢查
+        # 地聽由條件自動判定，不在此處檢查
 
     def setup_ui(self):
         self.top_frame = tk.Frame(self.root, bg="#2d5a27"); self.top_frame.pack(fill="x")
@@ -747,52 +761,72 @@ class MahjongFinalPro:
     def check_others_reaction(self, s_idx, tile):
         for i in range(4):
             if i == s_idx: continue
-            # 檢查是否能胡這張牌（傳入胡的牌）
-            if MJLogic.is_hu(self.hands[i], self.exposed[i], tile):
+            
+            # 檢查是否能胡這張牌（且沒有過水胡）
+            if tile not in self.passed_hu[i] and MJLogic.is_hu(self.hands[i], self.exposed[i], tile):
                 if messagebox.askyesno("榮胡", f"玩家 {i} 要胡牌嗎？"):
                     self.hands[i].append(tile); self.current_player = i; 
                     self.on_hu_click(False, s_idx, tile); return True
-            if self.hands[i].count(tile) == 3:
+                else:
+                    # 過水胡：記錄這張牌，同一圈內不再詢問
+                    self.passed_hu[i].add(tile)
+            
+            # 檢查明槓（且沒有過水槓）
+            if tile not in self.passed_kong[i] and self.hands[i].count(tile) == 3:
                 if messagebox.askyesno("明槓", f"玩家 {i} 要明槓 {TILE_NAMES[tile]} 嗎？"):
                     for _ in range(3): self.hands[i].remove(tile)
                     self.exposed[i].append([tile]*4); self.kong_count[i] += 1
                     self.anyone_exposed = True  # 有人明槓，地聽資格失效
                     self.current_player = i; self._draw(i, True, True); self.refresh(); return True
-            if self.hands[i].count(tile) >= 2:
+                else:
+                    # 過水槓：記錄這張牌
+                    self.passed_kong[i].add(tile)
+            
+            # 檢查碰（且沒有過水碰）
+            if tile not in self.passed_pong[i] and self.hands[i].count(tile) >= 2:
                 if messagebox.askyesno("碰", f"玩家 {i} 要碰 {TILE_NAMES[tile]} 嗎？"):
                     for _ in range(2): self.hands[i].remove(tile)
                     self.exposed[i].append([tile]*3)
                     self.anyone_exposed = True  # 有人碰，地聽資格失效
                     self.current_player = i; self.refresh(); return True
+                else:
+                    # 過水碰：記錄這張牌
+                    self.passed_pong[i].add(tile)
+                    
         next_p = (s_idx + 1) % 4
         if tile < 27:
-            h = self.hands[next_p]
-            tile_num = tile % 9
-            combos = []
-            
-            if tile_num >= 2 and (tile-2) in h and (tile-1) in h:
-                combos.append([tile-2, tile-1, tile])
-            
-            if tile_num >= 1 and tile_num <= 7 and (tile-1) in h and (tile+1) in h:
-                combos.append([tile-1, tile, tile+1])
-            
-            if tile_num <= 6 and (tile+1) in h and (tile+2) in h:
-                combos.append([tile, tile+1, tile+2])
-            
-            if combos:
-                options_str = "\n".join([f"{i+1}. {TILE_NAMES[c[0]]} {TILE_NAMES[c[1]]} {TILE_NAMES[c[2]]}" for i, c in enumerate(combos)])
-                result = simpledialog.askinteger(
-                    "吃牌", 
-                    f"玩家 {next_p} 可以吃 {TILE_NAMES[tile]}\n\n請選擇要吃的組合 (1-{len(combos)})，取消則不吃:\n\n{options_str}",
-                    minvalue=1, maxvalue=len(combos)
-                )
-                if result is not None:
-                    choice = combos[result - 1]
-                    for t in choice: 
-                        if t != tile: self.hands[next_p].remove(t)
-                    self.exposed[next_p].append(sorted(choice))
-                    self.anyone_exposed = True  # 有人吃，地聽資格失效
-                    self.current_player = next_p; self.refresh(); return True
+            # 檢查吃牌（且沒有過水吃）
+            if tile not in self.passed_chow[next_p]:
+                h = self.hands[next_p]
+                tile_num = tile % 9
+                combos = []
+                
+                if tile_num >= 2 and (tile-2) in h and (tile-1) in h:
+                    combos.append([tile-2, tile-1, tile])
+                
+                if tile_num >= 1 and tile_num <= 7 and (tile-1) in h and (tile+1) in h:
+                    combos.append([tile-1, tile, tile+1])
+                
+                if tile_num <= 6 and (tile+1) in h and (tile+2) in h:
+                    combos.append([tile, tile+1, tile+2])
+                
+                if combos:
+                    options_str = "\n".join([f"{i+1}. {TILE_NAMES[c[0]]} {TILE_NAMES[c[1]]} {TILE_NAMES[c[2]]}" for i, c in enumerate(combos)])
+                    result = simpledialog.askinteger(
+                        "吃牌", 
+                        f"玩家 {next_p} 可以吃 {TILE_NAMES[tile]}\n\n請選擇要吃的組合 (1-{len(combos)})，取消則不吃:\n\n{options_str}",
+                        minvalue=1, maxvalue=len(combos)
+                    )
+                    if result is not None:
+                        choice = combos[result - 1]
+                        for t in choice: 
+                            if t != tile: self.hands[next_p].remove(t)
+                        self.exposed[next_p].append(sorted(choice))
+                        self.anyone_exposed = True  # 有人吃，地聽資格失效
+                        self.current_player = next_p; self.refresh(); return True
+                    else:
+                        # 過水吃：記錄這張牌
+                        self.passed_chow[next_p].add(tile)
         return False
 
     def on_kong_click(self):
