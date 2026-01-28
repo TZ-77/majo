@@ -706,6 +706,14 @@ class MahjongFinalPro:
                 self._draw(self.current_player, True)
                 self.refresh()
             return
+        
+        # 【重要修正】一般玩家摸牌後，只檢查一次槓（不是槓後摸牌才檢查）
+        # 必須是正式摸牌（count_draw=True）才檢查，避免在發牌階段觸發
+        if count_draw and not is_kong_draw:
+            if self._can_ankong_now(p_idx):
+                self.auto_check_ankong(p_idx)
+            elif self._can_jiagong_now(p_idx):
+                self.auto_check_jiagong(p_idx)
 
     def setup_ui(self):
         self.top_frame = tk.Frame(self.root, bg="#2d5a27"); self.top_frame.pack(fill="x")
@@ -823,11 +831,7 @@ class MahjongFinalPro:
         can_listen = self._can_declare_listen(cp)
         self.listen_btn.config(state="normal" if can_listen and not self.is_declared_listening[cp] else "disabled")
         
-        # 自動檢查是否可以暗槓或加槓
-        if self._can_ankong_now(cp):
-            self.auto_check_ankong(cp)
-        elif self._can_jiagong_now(cp):
-            self.auto_check_jiagong(cp)
+        # 【重要修正】移除這裡的槓檢查，改在 _draw 中檢查一次
 
     def _can_ankong_now(self, p_idx):
         """檢查是否可以暗槓"""
@@ -975,64 +979,98 @@ class MahjongFinalPro:
             self.current_round_passed_chow[i].clear()
             self.current_round_passed_kong[i].clear()
 
+    def get_priority_name(self, s_idx, i):
+        """取得順位名稱（下家、對家、上家）"""
+        relative_pos = (i - s_idx) % 4
+        if relative_pos == 1:
+            return "下家"
+        elif relative_pos == 2:
+            return "對家"
+        elif relative_pos == 3:
+            return "上家"
+        return "未知"
+
     def check_others_reaction(self, s_idx, tile):
-        for i in range(4):
-            if i == s_idx: continue
-            
-            # 檢查是否能胡這張牌（且當前圈沒有過水胡）
+        """檢查其他玩家對出牌的反應（攔胡制實現）
+        胡牌順位：下家 > 對家 > 上家
+        吃碰槓優先級：槓 > 碰 > 吃
+        """
+        # 計算順位：下家 > 對家 > 上家
+        order = [(s_idx + i) % 4 for i in range(1, 4)]
+        
+        # === 第一優先：檢查胡牌（按順位） ===
+        for i in order:
+            # 檢查是否能胡（且沒有過水）
             if tile not in self.current_round_passed_hu[i] and MJLogic.is_hu(self.hands[i], self.exposed[i], tile):
-                # 如果是天聽玩家，不能過水
+                # 獲取順位名稱
+                priority_name = self.get_priority_name(s_idx, i)
+                
+                # 天聽玩家強制胡
                 if self.is_tenhou[i]:
-                    # 天聽玩家強制胡牌，不能放棄
-                    self.hands[i].append(tile); self.current_player = i; 
-                    self.on_hu_click(False, s_idx, tile); return True
+                    messagebox.showinfo("攔胡", f"玩家 {i} ({priority_name}) 天聽強制胡牌！")
+                    self.hands[i].append(tile)
+                    self.current_player = i
+                    self.on_hu_click(False, s_idx, tile)
+                    return True
                 
-                # 如果是地聽玩家，也不能過水
+                # 地聽玩家強制胡
                 if self.is_declared_listening[i] and self.check_chihou_conditions(i):
-                    # 地聽玩家強制胡牌，不能放棄
-                    self.hands[i].append(tile); self.current_player = i; 
-                    self.on_hu_click(False, s_idx, tile); return True
+                    messagebox.showinfo("攔胡", f"玩家 {i} ({priority_name}) 地聽強制胡牌！")
+                    self.hands[i].append(tile)
+                    self.current_player = i
+                    self.on_hu_click(False, s_idx, tile)
+                    return True
                 
-                # 其他玩家可以選擇是否胡
-                if messagebox.askyesno("榮胡", f"玩家 {i} 要胡牌嗎？"):
-                    self.hands[i].append(tile); self.current_player = i; 
-                    self.on_hu_click(False, s_idx, tile); return True
+                # 一般玩家詢問
+                if messagebox.askyesno("榮胡", f"玩家 {i} ({priority_name}) 要胡牌嗎？"):
+                    self.hands[i].append(tile)
+                    self.current_player = i
+                    self.on_hu_click(False, s_idx, tile)
+                    return True
                 else:
-                    # 過水胡：記錄這張牌，當前圈不再詢問
+                    # 過水胡
                     self.current_round_passed_hu[i].add(tile)
                     
-                    # 如果玩家已經宣告聽牌且過水，失去地聽資格
+                    # 地聽失效
                     if self.is_declared_listening[i] and self.check_chihou_conditions(i):
                         self.chihou_lost[i] = True
-                        messagebox.showinfo("地聽失效", f"玩家 {i} 過水，失去地聽資格！但仍為聽牌狀態")
-            
-            # 聽牌玩家不能吃碰槓，跳過檢查
+                        messagebox.showinfo("地聽失效", f"玩家 {i} 過水，失去地聽資格！")
+                    
+                    # 繼續檢查下一個順位的玩家（不 break，不 return）
+        
+        # === 第二優先：檢查槓（按順位） ===
+        for i in order:
             if self.is_declared_listening[i]:
                 continue
             
-            # 檢查明槓 - 修正版：必須手上有3張且沒有副露過這張牌
             if tile not in self.current_round_passed_kong[i] and self.hands[i].count(tile) == 3:
-                # 檢查是否已經碰過這張牌
+                # 檢查是否已經碰過
                 already_ponged = False
                 for combo in self.exposed[i]:
                     if len(combo) >= 3 and combo[0] == tile:
                         already_ponged = True
                         break
                 
-                # 如果已經碰過這張牌，就不能再明槓（只能加槓）
                 if not already_ponged:
                     if messagebox.askyesno("明槓", f"玩家 {i} 要明槓 {TILE_NAMES[tile]} 嗎？"):
                         for _ in range(3): self.hands[i].remove(tile)
-                        self.exposed[i].append([tile]*4); self.kong_count[i] += 1
-                        self.anyone_exposed = True  # 有人明槓，地聽資格失效
-                        self.current_player = i; self._draw(i, True, True); self.refresh(); return True
+                        self.exposed[i].append([tile]*4)
+                        self.kong_count[i] += 1
+                        self.anyone_exposed = True
+                        self.current_player = i
+                        self._draw(i, True, True)
+                        self.refresh()
+                        return True
                     else:
-                        # 過水槓：記錄這張牌
                         self.current_round_passed_kong[i].add(tile)
+        
+        # === 第三優先：檢查碰（按順位） ===
+        for i in order:
+            if self.is_declared_listening[i]:
+                continue
             
-            # 檢查碰（且沒有過水碰）
             if tile not in self.current_round_passed_pong[i] and self.hands[i].count(tile) >= 2:
-                # 檢查是否已經有刻子（不能重複碰）
+                # 檢查是否已有刻子
                 already_has_pong = False
                 for combo in self.exposed[i]:
                     if len(combo) >= 3 and combo[0] == tile:
@@ -1043,21 +1081,20 @@ class MahjongFinalPro:
                     if messagebox.askyesno("碰", f"玩家 {i} 要碰 {TILE_NAMES[tile]} 嗎？"):
                         for _ in range(2): self.hands[i].remove(tile)
                         self.exposed[i].append([tile]*3)
-                        self.anyone_exposed = True  # 有人碰，地聽資格失效
-                        self.current_player = i; self.refresh(); return True
+                        self.anyone_exposed = True
+                        self.current_player = i
+                        self.refresh()
+                        return True
                     else:
-                        # 過水碰：記錄這張牌
                         self.current_round_passed_pong[i].add(tile)
-                    
-        # 檢查下家吃牌
+        
+        # === 第四優先：檢查吃（只有下家） ===
         next_p = (s_idx + 1) % 4
         
-        # 聽牌玩家不能吃牌
         if self.is_declared_listening[next_p]:
             return False
-            
+        
         if tile < 27:
-            # 檢查吃牌（且沒有過水吃）
             if tile not in self.current_round_passed_chow[next_p]:
                 h = self.hands[next_p]
                 tile_num = tile % 9
@@ -1084,11 +1121,13 @@ class MahjongFinalPro:
                         for t in choice: 
                             if t != tile: self.hands[next_p].remove(t)
                         self.exposed[next_p].append(sorted(choice))
-                        self.anyone_exposed = True  # 有人吃，地聽資格失效
-                        self.current_player = next_p; self.refresh(); return True
+                        self.anyone_exposed = True
+                        self.current_player = next_p
+                        self.refresh()
+                        return True
                     else:
-                        # 過水吃：記錄這張牌
                         self.current_round_passed_chow[next_p].add(tile)
+        
         return False
 
     def on_hu_click(self, is_zi_mo, shooter=None, winning_tile=None):
