@@ -440,7 +440,7 @@ class MJLogic:
         if m_kong > 0: tai += m_kong; details.append(f"明槓 ({m_kong}台)")
         if a_kong > 0: tai += (a_kong * 2); details.append(f"暗槓 ({a_kong*2}台)")
 
-                # 8. 暗刻計算
+        # 8. 暗刻計算
         an_ke_count = count_an_ke(pure_hand, exposed, winning_tile, is_zi_mo)
         
         # 9. 大牌型
@@ -519,17 +519,18 @@ class MJLogic:
         if is_ban_qiu_ren(pure_hand, exposed, is_zi_mo):
             tai += 1; details.append("半求人 (1台)")
         
-        # 獨聽 (1台)
-        if waiting_count is not None:
-            if waiting_count == 1:
-                tai += 1; details.append("獨聽 (1台)")
-        elif winning_tile is not None:
-            pure_hand_before_win = list(pure_hand)
-            if winning_tile in pure_hand_before_win:
-                pure_hand_before_win.remove(winning_tile)
-            
-            if is_du_ting(pure_hand_before_win, exposed, winning_tile):
-                tai += 1; details.append("獨聽 (1台)")
+        # 獨聽 (1台) - 地聽不與聽牌（獨聽）重複計台
+        if not is_chihou:  # 地聽時不計獨聽
+            if waiting_count is not None:
+                if waiting_count == 1:
+                    tai += 1; details.append("獨聽 (1台)")
+            elif winning_tile is not None:
+                pure_hand_before_win = list(pure_hand)
+                if winning_tile in pure_hand_before_win:
+                    pure_hand_before_win.remove(winning_tile)
+                
+                if is_du_ting(pure_hand_before_win, exposed, winning_tile):
+                    tai += 1; details.append("獨聽 (1台)")
         
         return max(1, tai), details
 
@@ -582,58 +583,66 @@ class MahjongFinalPro:
         self.winning_tile = None  # 胡的那張牌
         self.is_first_round = True  # 是否為第一輪（用於天胡地胡判定）
         
-        # 天聽標記（莊家17張配牌就聽牌）
+        # 天聽系統
+        # 天聽：莊家取完牌後，打出第一張牌後，已經聽牌
         self.is_tenhou = [False] * 4
+        self.chihou_lost = [False] * 4  # 標記地聽是否因過水失效
         
         # 地聽系統
-        # 地聽規則：起牌後海底打進八張牌內，四家沒有碰牌吃牌明槓
+        # 地聽：起牌後海底打進八張牌內，且四家沒有碰牌吃牌明槓時的情況下按下聽牌
         self.total_discards = 0  # 總棄牌數（用於判定8張牌內）
         self.anyone_exposed = False  # 是否有任何人吃碰槓
+        self.is_declared_listening = [False] * 4  # 是否已宣告聽牌
+        self.last_drawn_tile = [None] * 4  # 記錄最後摸的牌
         
         # 過水系統
-        # 過水規則：玩家選擇不吃/碰/胡某張牌後，同一圈內不能再對相同的牌進行同樣操作
-        # 直到該玩家自己摸牌後才解禁
-        self.passed_hu = [set() for _ in range(4)]    # 過水胡的牌
-        self.passed_pong = [set() for _ in range(4)]  # 過水碰的牌
-        self.passed_chow = [set() for _ in range(4)]  # 過水吃的牌
-        self.passed_kong = [set() for _ in range(4)]  # 過水槓的牌
+        # 過水：同一圈內放棄胡/碰/吃/槓牌，則不能再進行同樣操作
+        self.current_round_passed_hu = [set() for _ in range(4)]    # 當前圈過水胡的牌
+        self.current_round_passed_pong = [set() for _ in range(4)]  # 當前圈過水碰的牌
+        self.current_round_passed_chow = [set() for _ in range(4)]  # 當前圈過水吃的牌
+        self.current_round_passed_kong = [set() for _ in range(4)]  # 當前圈過水槓的牌
 
         for i in range(4):
             for _ in range(16): self._draw(i, False)
         self._draw(0, True)
-        
-        # 檢查莊家天聽
-        self._check_tenhou()
 
         self.setup_ui(); self.refresh()
     
-    def _check_tenhou(self):
-        """檢查莊家是否為天聽
-        
-        天聽規則：
-        - 莊家發完17張牌後，還沒出牌前就已經聽牌
-        - 天聽後如果換牌（出牌）則失去天聽資格
-        - 天聽不能過水（不能放棄胡牌機會）
+    def check_tenhou_conditions(self, player_idx):
+        """檢查天聽條件
+        天聽：莊家取完牌後，打出第一張牌後，已經聽牌
         """
-        i = self.dealer_index
-        if len(self.exposed[i]) == 0:  # 必須門清
-            # 莊家：檢查17張手牌是否聽牌（移除一張牌測試）
-            waiting_tiles = count_waiting_tiles(self.hands[i][:-1], self.exposed[i])
-            if len(waiting_tiles) > 0:
-                self.is_tenhou[i] = True
-    
-    def check_chihou(self, p_idx):
-        """檢查玩家是否符合地聽條件（在胡牌時呼叫）
+        # 必須是莊家
+        if player_idx != self.dealer_index:
+            return False
         
-        地聽條件：
-        1. 起牌後海底打進八張牌內（總棄牌數 <= 8）
-        2. 四家沒有碰牌吃牌明槓
-        3. 玩家目前為門清（沒有吃碰過）
+        # 必須門清
+        if len(self.exposed[player_idx]) > 0:
+            return False
         
-        地聽不與聽牌重複計台
-        地聽不得過水
+        # 必須是第一張棄牌（打出第一張牌後）
+        if self.total_discards != 1:
+            return False
+        
+        # 檢查是否聽牌
+        waiting_tiles = count_waiting_tiles(self.hands[player_idx], self.exposed[player_idx])
+        return len(waiting_tiles) > 0
+
+    def check_chihou_conditions(self, player_idx):
+        """檢查地聽條件
+        地聽：起牌後海底打進八張牌內，且四家沒有碰牌吃牌明槓時的情況下按下聽牌
+        
+        八張牌內：指從莊家打出第一張牌開始，所有人總共打出8張牌以內
         """
-        # 條件1：總棄牌數 <= 8
+        # 必須已經宣告聽牌
+        if not self.is_declared_listening[player_idx]:
+            return False
+        
+        # 如果地聽因過水失效
+        if self.chihou_lost[player_idx]:
+            return False
+        
+        # 條件1：總棄牌數 <= 8（海底打進八張牌內）
         if self.total_discards > 8:
             return False
         
@@ -642,7 +651,7 @@ class MahjongFinalPro:
             return False
         
         # 條件3：玩家必須門清
-        if len(self.exposed[p_idx]) > 0:
+        if len(self.exposed[player_idx]) > 0:
             return False
         
         return True
@@ -661,22 +670,58 @@ class MahjongFinalPro:
         self.hands[p_idx].append(tile); self.hands[p_idx].sort()
         self.kong_flower_event[p_idx] = is_kong_draw
         
-        # 摸牌後清除過水記錄（解禁）
-        self.passed_hu[p_idx].clear()
-        self.passed_pong[p_idx].clear()
-        self.passed_chow[p_idx].clear()
-        self.passed_kong[p_idx].clear()
+        # 記錄最後摸的牌
+        self.last_drawn_tile[p_idx] = tile
         
-        # 檢查天聽（只有莊家，且必須是第一輪）
-        # 地聽由條件自動判定，不在此處檢查
+        # 如果是莊家且是配牌完成後（還沒打過牌）
+        if p_idx == self.dealer_index and self.total_discards == 0:
+            # 檢查是否聽牌（天聽 - 起手聽牌）
+            waiting = count_waiting_tiles(self.hands[p_idx], self.exposed[p_idx])
+            if len(waiting) > 0:
+                self.is_tenhou[p_idx] = True
+                messagebox.showinfo("天聽", f"莊家起手聽牌，天聽成立！打出第一張牌後維持聽牌狀態即可！")
+
+        # 如果是聽牌玩家摸牌，自動處理摸打
+        if self.is_declared_listening[p_idx] and not is_kong_draw:
+            # 檢查是否能自摸
+            if MJLogic.is_hu(self.hands[p_idx], self.exposed[p_idx]):
+                if messagebox.askyesno("自摸", f"玩家 {p_idx} 要自摸嗎？"):
+                    self.current_player = p_idx
+                    self.on_hu_click(True)
+                    return
+            
+            # 自動打出剛摸的牌（摸打）
+            tile_to_discard = tile
+            self.hands[p_idx].remove(tile_to_discard)
+            self.river[p_idx].append(tile_to_discard)
+            self.kong_flower_event[p_idx] = False
+            
+            # 有人出牌，新的一圈開始，清除當前圈的過水記錄
+            self._clear_current_round_passed()
+            
+            # 刷新後檢查其他人的反應
+            self.refresh()
+            if not self.check_others_reaction(p_idx, tile_to_discard):
+                self.current_player = (p_idx + 1) % 4
+                self._draw(self.current_player, True)
+                self.refresh()
+            return
 
     def setup_ui(self):
         self.top_frame = tk.Frame(self.root, bg="#2d5a27"); self.top_frame.pack(fill="x")
         
         # 左側按鈕區域
         btn_frame = tk.Frame(self.top_frame, bg="#2d5a27"); btn_frame.pack(side=tk.LEFT)
-        self.hu_btn = tk.Button(btn_frame, text="胡牌", bg="#8b0000", fg="white", font=("微軟正黑體", 12, "bold"), command=lambda: self.on_hu_click(True))
-        self.hu_btn.pack(side=tk.LEFT, padx=12, pady=10)
+        
+        # 添加聽牌按鈕
+        self.listen_btn = tk.Button(btn_frame, text="聽牌", bg="#006400", fg="white", 
+                                   font=("微軟正黑體", 12, "bold"), command=self.on_listen_click)
+        self.listen_btn.pack(side=tk.LEFT, padx=8, pady=10)
+        
+        # 胡牌按鈕
+        self.hu_btn = tk.Button(btn_frame, text="胡牌", bg="#8b0000", fg="white", 
+                               font=("微軟正黑體", 12, "bold"), command=lambda: self.on_hu_click(True))
+        self.hu_btn.pack(side=tk.LEFT, padx=8, pady=10)
         
         # 右側資訊區域
         info_frame = tk.Frame(self.top_frame, bg="#2d5a27"); info_frame.pack(side=tk.RIGHT)
@@ -693,7 +738,10 @@ class MahjongFinalPro:
         self.info_label = tk.Label(info_frame, text="", fg="#ffcc00", bg="#2d5a27", font=("微軟正黑體", 12))
         self.info_label.pack(side=tk.RIGHT, padx=10)
         
+        # 棄牌顯示區域
         self.canvas = tk.Canvas(self.root, bg="#1a472a", height=180); self.canvas.pack(fill="x")
+        
+        # 玩家手牌區域
         WIND_NAMES = ['東', '南', '西', '北']
         self.p_frames = [tk.LabelFrame(self.root, text=f"玩家 {i} ({WIND_NAMES[self.seat_winds[i]]}風)", bg="#2d5a27", fg="white") for i in range(4)]
         for f in self.p_frames: f.pack(fill="x", padx=10, pady=5)
@@ -711,36 +759,187 @@ class MahjongFinalPro:
             deck_text += " 【接近海底】"
         self.deck_label.config(text=deck_text)
         
+        # 更新棄牌顯示
         self.canvas.delete("all")
         for p, tiles in enumerate(self.river):
             txt = f"P{p} 棄牌: " + " ".join([TILE_NAMES[t] for t in tiles[-10:]])
             self.canvas.create_text(50, 40 + p*30, text=txt, fill="#ccc", anchor="w")
+        
+        # 更新玩家手牌和副露
         for i, frame in enumerate(self.p_frames):
             for w in frame.winfo_children(): w.destroy()
+            
+            # 手牌區域
             h_sub = tk.Frame(frame, bg="#2d5a27"); h_sub.pack(side=tk.LEFT)
             for idx, t in enumerate(self.hands[i]):
-                st = "normal" if i == self.current_player else "disabled"
-                tk.Button(h_sub, text=TILE_NAMES[t], width=4, command=lambda p=i, c=idx: self.on_discard(p, c), state=st).pack(side=tk.LEFT, padx=1)
+                # 如果是聽牌玩家且輪到他，只能打剛摸的牌
+                if self.is_declared_listening[i] and i == self.current_player:
+                    # 檢查這張牌是否是最後摸的牌（摸打）
+                    if self.hands[i][idx] == self.last_drawn_tile[i]:
+                        st = "normal"  # 可以打剛摸的牌
+                        btn_text = TILE_NAMES[t] + "🆕"
+                        btn_fg = "black"
+                    else:
+                        st = "disabled"  # 其他牌不能打
+                        btn_text = TILE_NAMES[t] + "🔒"
+                        btn_fg = "gray"
+                else:
+                    st = "normal" if i == self.current_player else "disabled"
+                    btn_text = TILE_NAMES[t]
+                    btn_fg = "black"
+                
+                btn = tk.Button(h_sub, text=btn_text, width=4, fg=btn_fg,
+                               command=lambda p=i, c=idx: self.on_discard(p, c), 
+                               state=st)
+                btn.pack(side=tk.LEFT, padx=1)
+            
+            # 副露區域
             i_sub = tk.Frame(frame, bg="#2d5a27"); i_sub.pack(side=tk.RIGHT, padx=10)
             for combo in self.exposed[i]:
                 f = tk.Frame(i_sub, bg="#444"); f.pack(side=tk.LEFT, padx=2)
-                for x in combo: tk.Label(f, text=TILE_NAMES[x], width=3, bg="#eee").pack(side=tk.LEFT)
-        cp = self.current_player
-        self.info_label.config(text=f"輪到玩家 {cp} | 手牌 {len([t for t in self.hands[cp] if t < 34])} 張")
+                for x in combo: 
+                    tk.Label(f, text=TILE_NAMES[x], width=3, bg="#eee").pack(side=tk.LEFT)
         
-        # 自摸檢查
+        # 更新當前玩家資訊
+        cp = self.current_player
+        hand_count = len([t for t in self.hands[cp] if t < 34])
+        
+        # 添加天聽/地聽狀態顯示
+        status_text = ""
+        if self.is_tenhou[cp]:
+            status_text += " 【天聽】"
+        elif self.is_declared_listening[cp] and self.check_chihou_conditions(cp):
+            status_text += " 【地聽】"
+        elif self.is_declared_listening[cp]:
+            status_text += " 【聽牌】"
+            
+        self.info_label.config(text=f"輪到玩家 {cp} | 手牌 {hand_count} 張{status_text}")
+        
+        # 更新按鈕狀態
         can_hu_self = MJLogic.is_hu(self.hands[cp], self.exposed[cp])
         self.hu_btn.config(state="normal" if can_hu_self else "disabled")
-        self.kong_btn.config(state="normal" if self._can_kong_now(cp) else "disabled")
+        
+        # 聽牌按鈕狀態
+        can_listen = self._can_declare_listen(cp)
+        self.listen_btn.config(state="normal" if can_listen and not self.is_declared_listening[cp] else "disabled")
+        
+        # 自動檢查是否可以暗槓或加槓
+        if self._can_ankong_now(cp):
+            self.auto_check_ankong(cp)
+        elif self._can_jiagong_now(cp):
+            self.auto_check_jiagong(cp)
 
-    def _can_kong_now(self, p_idx):
+    def _can_ankong_now(self, p_idx):
+        """檢查是否可以暗槓"""
         pure = [t for t in self.hands[p_idx] if t < 34]; c = counts34(pure)
-        if any(v == 4 for v in c): return True
+        # 檢查是否有4張相同的牌（暗槓）
+        return any(v == 4 for v in c)
+
+    def _can_jiagong_now(self, p_idx):
+        """檢查是否可以加槓（補槓）"""
+        pure = [t for t in self.hands[p_idx] if t < 34]
+        
         for combo in self.exposed[p_idx]:
-            if len(combo) == 3 and combo[0] in pure: return True
+            # 如果已經有碰（3張相同），且手牌有第4張
+            if len(combo) == 3 and combo[0] == combo[1] == combo[2]:
+                if combo[0] in pure:
+                    return True
         return False
 
+    def auto_check_ankong(self, p_idx):
+        """自動檢查並提示暗槓"""
+        pure = [t for t in self.hands[p_idx] if t < 34]; c = counts34(pure)
+        
+        for tile, count in enumerate(c):
+            if count == 4:
+                # 如果是聽牌玩家，不能暗槓（除非不影響聽牌牌型）
+                if self.is_declared_listening[p_idx]:
+                    # 聽牌後原則上不能暗槓，但實務上要看是否改變聽牌牌型
+                    # 這裡先不允許任何暗槓以簡化規則
+                    return
+                
+                if messagebox.askyesno("暗槓", f"玩家 {p_idx} 要暗槓 {TILE_NAMES[tile]} 嗎？"):
+                    for _ in range(4): self.hands[p_idx].remove(tile)
+                    self.exposed[p_idx].append([tile]*4)
+                    self.ankong_count[p_idx] += 1
+                    self._draw(p_idx, True, True)
+                    self.refresh()
+                    return
+
+    def auto_check_jiagong(self, p_idx):
+        """自動檢查並提示加槓"""
+        pure = [t for t in self.hands[p_idx] if t < 34]
+        
+        for combo in self.exposed[p_idx]:
+            if len(combo) == 3 and combo[0] == combo[1] == combo[2]:
+                tile = combo[0]
+                if tile in pure:
+                    # 聽牌玩家不能加槓（除非不影響聽牌）
+                    if self.is_declared_listening[p_idx]:
+                        return
+                    
+                    if messagebox.askyesno("加槓", f"玩家 {p_idx} 要加槓 {TILE_NAMES[tile]} 嗎？"):
+                        self.hands[p_idx].remove(tile)
+                        combo.append(tile)  # 將第4張加入原本的碰
+                        self.kong_count[p_idx] += 1
+                        self._draw(p_idx, True, True)
+                        self.refresh()
+                        return
+
+    def _can_declare_listen(self, p_idx):
+        """檢查是否可以宣告聽牌"""
+        # 1. 必須門清
+        if len(self.exposed[p_idx]) > 0:
+            return False
+        
+        # 2. 不能已經宣告過聽牌
+        if self.is_declared_listening[p_idx]:
+            return False
+        
+        # 3. 必須真的聽牌
+        waiting_tiles = count_waiting_tiles(self.hands[p_idx], self.exposed[p_idx])
+        if len(waiting_tiles) == 0:
+            return False
+        
+        # 4. 如果是地聽，必須在8張牌內且無吃碰槓
+        if self.total_discards > 8:
+            return False
+        
+        if self.anyone_exposed:
+            return False
+        
+        return True
+
+    def on_listen_click(self):
+        """玩家按下聽牌按鈕"""
+        cp = self.current_player
+        
+        # 檢查是否可以宣告聽牌
+        if not self._can_declare_listen(cp):
+            messagebox.showinfo("無法聽牌", "不符合宣告聽牌條件！")
+            return
+        
+        # 宣告聽牌
+        self.is_declared_listening[cp] = True
+        
+        # 檢查是否為地聽
+        is_chihou = self.check_chihou_conditions(cp)
+        
+        if is_chihou:
+            messagebox.showinfo("聽牌成功", f"玩家 {cp} 宣告聽牌成功！符合地聽條件！")
+        else:
+            messagebox.showinfo("聽牌成功", f"玩家 {cp} 宣告聽牌成功！")
+        
+        self.refresh()
+
     def on_discard(self, p_idx, t_idx):
+        # 如果是聽牌玩家，只能打剛摸的牌（摸打）
+        if self.is_declared_listening[p_idx]:
+            # 檢查是否是剛摸的牌（最後一張）
+            if self.hands[p_idx][t_idx] != self.last_drawn_tile[p_idx]:
+                messagebox.showinfo("聽牌中", "聽牌後只能打剛摸的牌（摸打）！")
+                return
+        
         tile = self.hands[p_idx].pop(t_idx); self.river[p_idx].append(tile)
         self.kong_flower_event[p_idx] = False
         self.is_first_round = False  # 有人出牌後就不是第一輪了
@@ -748,53 +947,118 @@ class MahjongFinalPro:
         # 更新總棄牌數（用於地聽判定）
         self.total_discards += 1
         
-        # 出牌後失去天聽資格（因為換牌了）
-        self.is_tenhou[p_idx] = False
-            
+        # 有人出牌，新的一圈開始，清除當前圈的過水記錄
+        self._clear_current_round_passed()
+        
+        # 莊家打出第一張牌後，檢查是否仍聽牌（天聽資格確認）
+        if p_idx == self.dealer_index and self.total_discards == 1:
+            # 檢查打出後是否仍聽牌
+            waiting_tiles = count_waiting_tiles(self.hands[p_idx], self.exposed[p_idx])
+            if len(waiting_tiles) > 0:
+                # 如果之前有天聽標記，繼續保持
+                if self.is_tenhou[p_idx]:
+                    messagebox.showinfo("天聽確認", f"莊家打出第一張牌後仍聽牌，天聽成立！")
+            else:
+                # 如果打出後不聽牌，失去天聽資格
+                self.is_tenhou[p_idx] = False
+        
         self.refresh()
         if not self.check_others_reaction(p_idx, tile):
             self.current_player = (p_idx + 1) % 4
             self._draw(self.current_player, True); self.refresh()
 
+    def _clear_current_round_passed(self):
+        """清除當前圈的過水記錄"""
+        for i in range(4):
+            self.current_round_passed_hu[i].clear()
+            self.current_round_passed_pong[i].clear()
+            self.current_round_passed_chow[i].clear()
+            self.current_round_passed_kong[i].clear()
+
     def check_others_reaction(self, s_idx, tile):
         for i in range(4):
             if i == s_idx: continue
             
-            # 檢查是否能胡這張牌（且沒有過水胡）
-            if tile not in self.passed_hu[i] and MJLogic.is_hu(self.hands[i], self.exposed[i], tile):
+            # 檢查是否能胡這張牌（且當前圈沒有過水胡）
+            if tile not in self.current_round_passed_hu[i] and MJLogic.is_hu(self.hands[i], self.exposed[i], tile):
+                # 如果是天聽玩家，不能過水
+                if self.is_tenhou[i]:
+                    # 天聽玩家強制胡牌，不能放棄
+                    self.hands[i].append(tile); self.current_player = i; 
+                    self.on_hu_click(False, s_idx, tile); return True
+                
+                # 如果是地聽玩家，也不能過水
+                if self.is_declared_listening[i] and self.check_chihou_conditions(i):
+                    # 地聽玩家強制胡牌，不能放棄
+                    self.hands[i].append(tile); self.current_player = i; 
+                    self.on_hu_click(False, s_idx, tile); return True
+                
+                # 其他玩家可以選擇是否胡
                 if messagebox.askyesno("榮胡", f"玩家 {i} 要胡牌嗎？"):
                     self.hands[i].append(tile); self.current_player = i; 
                     self.on_hu_click(False, s_idx, tile); return True
                 else:
-                    # 過水胡：記錄這張牌，同一圈內不再詢問
-                    self.passed_hu[i].add(tile)
+                    # 過水胡：記錄這張牌，當前圈不再詢問
+                    self.current_round_passed_hu[i].add(tile)
+                    
+                    # 如果玩家已經宣告聽牌且過水，失去地聽資格
+                    if self.is_declared_listening[i] and self.check_chihou_conditions(i):
+                        self.chihou_lost[i] = True
+                        messagebox.showinfo("地聽失效", f"玩家 {i} 過水，失去地聽資格！但仍為聽牌狀態")
             
-            # 檢查明槓（且沒有過水槓）
-            if tile not in self.passed_kong[i] and self.hands[i].count(tile) == 3:
-                if messagebox.askyesno("明槓", f"玩家 {i} 要明槓 {TILE_NAMES[tile]} 嗎？"):
-                    for _ in range(3): self.hands[i].remove(tile)
-                    self.exposed[i].append([tile]*4); self.kong_count[i] += 1
-                    self.anyone_exposed = True  # 有人明槓，地聽資格失效
-                    self.current_player = i; self._draw(i, True, True); self.refresh(); return True
-                else:
-                    # 過水槓：記錄這張牌
-                    self.passed_kong[i].add(tile)
+            # 聽牌玩家不能吃碰槓，跳過檢查
+            if self.is_declared_listening[i]:
+                continue
+            
+            # 檢查明槓 - 修正版：必須手上有3張且沒有副露過這張牌
+            if tile not in self.current_round_passed_kong[i] and self.hands[i].count(tile) == 3:
+                # 檢查是否已經碰過這張牌
+                already_ponged = False
+                for combo in self.exposed[i]:
+                    if len(combo) >= 3 and combo[0] == tile:
+                        already_ponged = True
+                        break
+                
+                # 如果已經碰過這張牌，就不能再明槓（只能加槓）
+                if not already_ponged:
+                    if messagebox.askyesno("明槓", f"玩家 {i} 要明槓 {TILE_NAMES[tile]} 嗎？"):
+                        for _ in range(3): self.hands[i].remove(tile)
+                        self.exposed[i].append([tile]*4); self.kong_count[i] += 1
+                        self.anyone_exposed = True  # 有人明槓，地聽資格失效
+                        self.current_player = i; self._draw(i, True, True); self.refresh(); return True
+                    else:
+                        # 過水槓：記錄這張牌
+                        self.current_round_passed_kong[i].add(tile)
             
             # 檢查碰（且沒有過水碰）
-            if tile not in self.passed_pong[i] and self.hands[i].count(tile) >= 2:
-                if messagebox.askyesno("碰", f"玩家 {i} 要碰 {TILE_NAMES[tile]} 嗎？"):
-                    for _ in range(2): self.hands[i].remove(tile)
-                    self.exposed[i].append([tile]*3)
-                    self.anyone_exposed = True  # 有人碰，地聽資格失效
-                    self.current_player = i; self.refresh(); return True
-                else:
-                    # 過水碰：記錄這張牌
-                    self.passed_pong[i].add(tile)
+            if tile not in self.current_round_passed_pong[i] and self.hands[i].count(tile) >= 2:
+                # 檢查是否已經有刻子（不能重複碰）
+                already_has_pong = False
+                for combo in self.exposed[i]:
+                    if len(combo) >= 3 and combo[0] == tile:
+                        already_has_pong = True
+                        break
+                
+                if not already_has_pong:
+                    if messagebox.askyesno("碰", f"玩家 {i} 要碰 {TILE_NAMES[tile]} 嗎？"):
+                        for _ in range(2): self.hands[i].remove(tile)
+                        self.exposed[i].append([tile]*3)
+                        self.anyone_exposed = True  # 有人碰，地聽資格失效
+                        self.current_player = i; self.refresh(); return True
+                    else:
+                        # 過水碰：記錄這張牌
+                        self.current_round_passed_pong[i].add(tile)
                     
+        # 檢查下家吃牌
         next_p = (s_idx + 1) % 4
+        
+        # 聽牌玩家不能吃牌
+        if self.is_declared_listening[next_p]:
+            return False
+            
         if tile < 27:
             # 檢查吃牌（且沒有過水吃）
-            if tile not in self.passed_chow[next_p]:
+            if tile not in self.current_round_passed_chow[next_p]:
                 h = self.hands[next_p]
                 tile_num = tile % 9
                 combos = []
@@ -824,25 +1088,14 @@ class MahjongFinalPro:
                         self.current_player = next_p; self.refresh(); return True
                     else:
                         # 過水吃：記錄這張牌
-                        self.passed_chow[next_p].add(tile)
+                        self.current_round_passed_chow[next_p].add(tile)
         return False
-
-    def on_kong_click(self):
-        cp = self.current_player; pure = [t for t in self.hands[cp] if t < 34]; c = counts34(pure)
-        target = next((t for t, v in enumerate(c) if v == 4), None)
-        if target is not None:
-            for _ in range(4): self.hands[cp].remove(target)
-            self.exposed[cp].append([target]*4); self.ankong_count[cp] += 1
-        else:
-            for combo in self.exposed[cp]:
-                if len(combo) == 3 and combo[0] in pure:
-                    t = combo[0]; self.hands[cp].remove(t); combo.append(t); self.kong_count[cp] += 1; break
-        self._draw(cp, True, True); self.refresh()
 
     def on_hu_click(self, is_zi_mo, shooter=None, winning_tile=None):
         cp = self.current_player
         pure_hand = [t for t in self.hands[cp] if t < 34]
         
+        # 修正這裡：應該是 if winning_tile is None:
         if winning_tile is None:
             if is_zi_mo and pure_hand:
                 winning_tile = pure_hand[-1]
@@ -864,10 +1117,11 @@ class MahjongFinalPro:
         # 檢查是否為海底撈月（摸到最後一張牌胡牌）
         is_haidilao = self.is_last_tile and is_zi_mo
         
-        # 檢查是否符合地聽條件（8張牌內、無吃碰槓、門清）
-        is_chihou = self.check_chihou(cp)
+        # 檢查是否符合天聽/地聽條件
+        is_tenhou = self.is_tenhou[cp]
+        is_chihou = self.is_declared_listening[cp] and self.check_chihou_conditions(cp)
         
-        # 計算台數（包含門清、風位和平胡判斷）
+        # 計算台數
         tai, details = MJLogic.calculate_tai_star31_auto(
             pure_hand, self.exposed[cp], self.flowers[cp],
             is_zi_mo, cp==self.dealer_index, self.dealer_streak, 
@@ -875,7 +1129,7 @@ class MahjongFinalPro:
             self.kong_count[cp], self.ankong_count[cp],
             self.round_wind, self.seat_winds[cp], 
             winning_tile, waiting_count, self.is_first_round,
-            self.is_tenhou[cp], is_chihou
+            is_tenhou, is_chihou
         )
         
         WIND_NAMES = ['東', '南', '西', '北']
@@ -887,4 +1141,4 @@ class MahjongFinalPro:
 if __name__ == "__main__":
     root = tk.Tk()
     game = MahjongFinalPro(root)
-    root.mainloop()    
+    root.mainloop()
