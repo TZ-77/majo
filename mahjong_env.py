@@ -596,8 +596,8 @@ class MahjongFinalPro:
         self.last_drawn_tile = [None] * 4  # 記錄最後摸的牌
         
         # 過水系統
-        # 過水：同一圈內放棄胡/碰/吃/槓牌，則不能再進行同樣操作
-        self.current_round_passed_hu = [set() for _ in range(4)]    # 當前圈過水胡的牌
+        # 過水胡：若選擇不胡，則在自己下次出牌前，不能胡任何人的牌
+        self.current_round_passed_hu = [False] * 4  # True表示處於過水狀態
         self.current_round_passed_pong = [set() for _ in range(4)]  # 當前圈過水碰的牌
         self.current_round_passed_chow = [set() for _ in range(4)]  # 當前圈過水吃的牌
         self.current_round_passed_kong = [set() for _ in range(4)]  # 當前圈過水槓的牌
@@ -951,6 +951,9 @@ class MahjongFinalPro:
         # 更新總棄牌數（用於地聽判定）
         self.total_discards += 1
         
+        # 解除該玩家的過水狀態（自己出牌後解禁）
+        self.current_round_passed_hu[p_idx] = False
+        
         # 有人出牌，新的一圈開始，清除當前圈的過水記錄
         self._clear_current_round_passed()
         
@@ -972,9 +975,10 @@ class MahjongFinalPro:
             self._draw(self.current_player, True); self.refresh()
 
     def _clear_current_round_passed(self):
-        """清除當前圈的過水記錄"""
+        """清除當前牌的過水記錄（吃/碰/槓）
+        注意：過水胡不在此清除，因為過水胡要等到玩家自己出牌才解除"""
         for i in range(4):
-            self.current_round_passed_hu[i].clear()
+            # self.current_round_passed_hu[i] 不清除
             self.current_round_passed_pong[i].clear()
             self.current_round_passed_chow[i].clear()
             self.current_round_passed_kong[i].clear()
@@ -1001,7 +1005,8 @@ class MahjongFinalPro:
         # === 第一優先：檢查胡牌（按順位） ===
         for i in order:
             # 檢查是否能胡（且沒有過水）
-            if tile not in self.current_round_passed_hu[i] and MJLogic.is_hu(self.hands[i], self.exposed[i], tile):
+            # 若 current_round_passed_hu 為 True，代表本圈已過水，不能再胡
+            if not self.current_round_passed_hu[i] and MJLogic.is_hu(self.hands[i], self.exposed[i], tile):
                 # 獲取順位名稱
                 priority_name = self.get_priority_name(s_idx, i)
                 
@@ -1028,8 +1033,8 @@ class MahjongFinalPro:
                     self.on_hu_click(False, s_idx, tile)
                     return True
                 else:
-                    # 過水胡
-                    self.current_round_passed_hu[i].add(tile)
+                    # 過水胡：標記為 True，直到自己出牌前都不能胡
+                    self.current_round_passed_hu[i] = True
                     
                     # 地聽失效
                     if self.is_declared_listening[i] and self.check_chihou_conditions(i):
